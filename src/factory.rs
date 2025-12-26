@@ -4,6 +4,7 @@ use opendal::{Error, ErrorKind, Operator, OperatorRegistry, OperatorUri};
 use url::Url;
 
 pub trait OperatorFactory: Send + Sync {
+    #[allow(clippy::wrong_self_convention)]
     fn from_uri(&self, uri: &str) -> Result<Operator, Error>;
 }
 

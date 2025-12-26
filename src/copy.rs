@@ -50,7 +50,7 @@ pub async fn copy(
         }
         Err(e) if e.kind() == ErrorKind::NotFound => dst_path.clone(),
         Err(e) => {
-            return Err(e.into());
+            return Err(e);
         }
     };
 
