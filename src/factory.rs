@@ -10,25 +10,27 @@ pub trait OperatorFactory: Send + Sync {
 
 pub struct DefaultOperatorFactory;
 
+impl DefaultOperatorFactory {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DefaultOperatorFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OperatorFactory for DefaultOperatorFactory {
     fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
         Operator::from_uri(uri)
     }
 }
 
-pub struct RegistryOperatorFactory {
-    registry: OperatorRegistry,
-}
-
-impl RegistryOperatorFactory {
-    pub fn new(registry: OperatorRegistry) -> Self {
-        Self { registry }
-    }
-}
-
-impl OperatorFactory for RegistryOperatorFactory {
+impl OperatorFactory for OperatorRegistry {
     fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
-        self.registry.load(uri)
+        self.load(uri)
     }
 }
 
@@ -64,6 +66,7 @@ impl OperatorFactory for ProfileOperatorFactory {
                 .with_context("profile_name", profile_name)
         })?;
 
+        // This should never fail (sagikazarmark, 2025)
         let _ = url.set_scheme(scheme.as_str());
 
         let uri = OperatorUri::new(url.as_str(), profile)?;
@@ -72,30 +75,84 @@ impl OperatorFactory for ProfileOperatorFactory {
     }
 }
 
-pub struct LambdaOperatorFactory<F> {
-    inner: Box<dyn OperatorFactory>,
-    r#fn: F,
+pub struct ChainOperatorFactory {
+    factories: Vec<Box<dyn OperatorFactory>>,
 }
 
-impl<F> LambdaOperatorFactory<F>
-where
-    F: Fn(Operator) -> Operator + Send + Sync,
-{
-    pub fn new(inner: impl OperatorFactory + 'static, r#fn: F) -> Self {
+impl ChainOperatorFactory {
+    pub fn new<I>(factories: I) -> Self
+    where
+        I: IntoIterator<Item = Box<dyn OperatorFactory>>,
+    {
         Self {
-            inner: Box::new(inner),
-            r#fn,
+            factories: factories.into_iter().collect(),
+        }
+    }
+
+    pub fn builder() -> ChainOperatorFactoryBuilder {
+        ChainOperatorFactoryBuilder::default()
+    }
+}
+
+impl OperatorFactory for ChainOperatorFactory {
+    fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
+        for factory in &self.factories {
+            match factory.from_uri(uri) {
+                Ok(op) => return Ok(op),
+                Err(e) if e.kind() == ErrorKind::Unsupported => continue,
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(Error::new(ErrorKind::Unsupported, "Unsupported URI").with_context("uri", uri))
+    }
+}
+
+#[derive(Default)]
+pub struct ChainOperatorFactoryBuilder {
+    factories: Vec<Box<dyn OperatorFactory>>,
+}
+
+impl ChainOperatorFactoryBuilder {
+    pub fn then(mut self, factory: impl OperatorFactory + 'static) -> Self {
+        self.factories.push(Box::new(factory));
+        self
+    }
+
+    pub fn build(self) -> ChainOperatorFactory {
+        ChainOperatorFactory {
+            factories: self.factories,
         }
     }
 }
 
-impl<F> OperatorFactory for LambdaOperatorFactory<F>
+pub struct LambdaOperatorFactory<Inner, F>
 where
+    Inner: OperatorFactory,
+    F: Fn(Operator) -> Operator + Send + Sync,
+{
+    inner: Inner,
+    transform: F,
+}
+
+impl<Inner, F> LambdaOperatorFactory<Inner, F>
+where
+    Inner: OperatorFactory,
+    F: Fn(Operator) -> Operator + Send + Sync,
+{
+    pub fn new(inner: Inner, transform: F) -> Self {
+        Self { inner, transform }
+    }
+}
+
+impl<Inner, F> OperatorFactory for LambdaOperatorFactory<Inner, F>
+where
+    Inner: OperatorFactory,
     F: Fn(Operator) -> Operator + Send + Sync,
 {
     fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
         let op = self.inner.from_uri(uri)?;
 
-        Ok((self.r#fn)(op))
+        Ok((self.transform)(op))
     }
 }
