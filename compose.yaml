@@ -1,0 +1,21 @@
+services:
+  restate:
+    image: docker.restate.dev/restatedev/restate:latest
+    ports:
+      - 127.0.0.1:9070:9070
+      - 127.0.0.1:9071:9071
+      - 127.0.0.1:8080:8080
+    volumes:
+      - restate-data:/restate-data
+
+  rustfs:
+    image: rustfs/rustfs:alpha
+    ports:
+      - 127.0.0.1:9000:9000
+      - 127.0.0.1:9001:9001
+    volumes:
+      - ./var/rustfs/data:/data
+      - ./var/rustfs/logs:/logs
+
+volumes:
+  restate-data:
