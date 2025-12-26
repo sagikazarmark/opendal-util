@@ -19,7 +19,7 @@ url = { version = "2.5", features = ["serde"] }
 
 [features]
 default = []
-restate = ["dep:restate-sdk"]
+restate = ["dep:restate-sdk", "serde", "schemars"]
 serde = ["dep:serde"]
 schemars = ["serde", "dep:schemars"]
 
