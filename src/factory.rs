@@ -56,7 +56,9 @@ impl OperatorFactory for ProfileOperatorFactory {
             .profiles
             .get(profile_name)
             .ok_or_else(|| {
-                Error::new(ErrorKind::ConfigInvalid, "Profile not found")
+                // Operator::from_uri returns this error as well when a scheme is unsupported,
+                // even though the error description says this error is returned when an operation is not supported.
+                Error::new(ErrorKind::Unsupported, "Profile not found")
                     .with_context("profile_name", profile_name)
             })?
             .clone();
