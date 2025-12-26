@@ -262,7 +262,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -888,7 +888,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -966,7 +966,7 @@ dependencies = [
  "futures",
  "opendal",
  "restate-sdk",
- "schemars 1.1.0",
+ "schemars 1.2.0",
  "serde",
  "typed-path",
  "url",
@@ -1431,13 +1431,13 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9558e172d4e8533736ba97870c4b2cd63f84b382a3d6eb063da41b91cce17289"
+checksum = "54e910108742c57a770f492731f99be216a52fadd361b06c8fb59d74ccc267d2"
 dependencies = [
  "dyn-clone",
  "ref-cast",
- "schemars_derive 1.1.0",
+ "schemars_derive 1.2.0",
  "serde",
  "serde_json",
  "url",
@@ -1457,9 +1457,9 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301858a4023d78debd2353c7426dc486001bddc91ae31a76fb1f55132f7e2633"
+checksum = "4908ad288c5035a8eb12cfdf0d49270def0a268ee162b75eeee0f85d155a7c45"
 dependencies = [
  "proc-macro2",
  "quote",
