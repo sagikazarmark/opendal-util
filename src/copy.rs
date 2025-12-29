@@ -2,7 +2,7 @@ use std::io;
 
 use content_disposition::parse_content_disposition;
 use futures::{TryFutureExt, TryStreamExt};
-use opendal::{Error, ErrorKind, Operator};
+use opendal::{EntryMode, Error, ErrorKind, Metadata, Operator};
 use typed_path::UnixPath;
 
 pub async fn copy(
@@ -13,14 +13,79 @@ pub async fn copy(
     let (dst_op, dst_path) = destination;
 
     let src_stat = src_op.stat(src_path.as_str()).await?;
-    if src_stat.is_dir() {
-        // op_from.info().native_capability().list;
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            "Copying directories is not supported (yet)",
-        ));
-    }
 
+    match src_stat.mode() {
+        EntryMode::DIR => copy_dir(src_op, src_path, src_stat, dst_op, dst_path).await,
+        EntryMode::FILE => copy_file(src_op, src_path, src_stat, dst_op, dst_path).await,
+        _ => {
+            return Err(Error::new(ErrorKind::Unsupported, "Unknown entry mode"));
+        }
+    }
+}
+
+async fn copy_dir(
+    src_op: Operator,
+    src_path: String,
+    src_stat: Metadata,
+    dst_op: Operator,
+    dst_path: String,
+) -> Result<(), Error> {
+    let real_dst_path = match dst_op.stat(&dst_path).await {
+        Ok(stat) if stat.is_dir() => {
+            // Destination exists and is a directory
+            if let Some(filename) = UnixPath::new(&src_path).file_name() {
+                UnixPath::new(&dst_path)
+                    .join(filename)
+                    .to_string_lossy()
+                    .to_string()
+            } else if let Some(filename) = src_stat
+                .content_disposition()
+                .and_then(|cd| parse_content_disposition(cd).filename_full())
+            {
+                filename
+            } else {
+                return Err(Error::new(
+                    ErrorKind::Unexpected,
+                    format!(
+                        "Cannot copy source '{}' into directory '{}': Source has no filename.",
+                        src_path, dst_path
+                    ),
+                ));
+            }
+        }
+        Ok(_) => {
+            // Destination exists and is a file (overwrite)
+            return Err(Error::new(
+                ErrorKind::Unexpected,
+                format!(
+                    "Directory copy destination '{}' exists and is a file.",
+                    dst_path
+                ),
+            ));
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => dst_path.clone(),
+        Err(e) => {
+            return Err(e);
+        }
+    };
+
+    do_copy_file(
+        &src_op,
+        src_path.as_str(),
+        src_stat,
+        &dst_op,
+        real_dst_path.as_str(),
+    )
+    .await
+}
+
+async fn copy_file(
+    src_op: Operator,
+    src_path: String,
+    src_stat: Metadata,
+    dst_op: Operator,
+    dst_path: String,
+) -> Result<(), Error> {
     let real_dst_path = match dst_op.stat(&dst_path).await {
         Ok(stat) if stat.is_dir() => {
             // Destination exists and is a directory
@@ -54,8 +119,28 @@ pub async fn copy(
         }
     };
 
-    let reader = src_op.reader(src_path.as_str()).await?;
-    let mut writer_builder = dst_op.writer_with(real_dst_path.as_str());
+    do_copy_file(
+        &src_op,
+        src_path.as_str(),
+        src_stat,
+        &dst_op,
+        real_dst_path.as_str(),
+    )
+    .await
+}
+
+// Copy a file from one storage to another.
+// This function expects that the input parameters have been validated
+// (that is, each path points to a file).
+async fn do_copy_file(
+    src_op: &Operator,
+    src_path: &str,
+    src_stat: Metadata,
+    dst_op: &Operator,
+    dst_path: &str,
+) -> Result<(), Error> {
+    let reader = src_op.reader(src_path).await?;
+    let mut writer_builder = dst_op.writer_with(dst_path);
 
     if let Some(content_type) = src_stat.content_type() {
         writer_builder = writer_builder.content_type(content_type);
