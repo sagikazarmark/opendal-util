@@ -2,8 +2,8 @@ use std::io;
 
 use content_disposition::parse_content_disposition;
 use futures::{TryFutureExt, TryStreamExt};
-use opendal::{EntryMode, Error, ErrorKind, Metadata, Operator};
-use typed_path::UnixPath;
+use opendal::{EntryMode, Error, ErrorKind, Metadata, Operator, options::ListOptions};
+use typed_path::Utf8UnixPathBuf;
 
 pub async fn copy(
     source: (Operator, String),
@@ -13,6 +13,18 @@ pub async fn copy(
     let (dst_op, dst_path) = destination;
 
     Copier::new(src_op, dst_op).copy(src_path, dst_path).await
+}
+
+pub async fn copy_recursive(
+    source: (Operator, String),
+    destination: (Operator, String),
+) -> Result<(), Error> {
+    let (src_op, src_path) = source;
+    let (dst_op, dst_path) = destination;
+
+    Copier::new(src_op, dst_op)
+        .copy_recursive(src_path, dst_path)
+        .await
 }
 
 pub struct Copier {
@@ -29,52 +41,122 @@ impl Copier {
     }
 
     pub async fn copy(&self, source: String, destination: String) -> Result<(), Error> {
-        let stat = self.source.stat(source.as_str()).await?;
+        self._copy(source, destination, false).await
+    }
 
-        match stat.mode() {
-            // EntryMode::DIR => self.copy_dir(src_op, src_path, src_stat, dst_op, dst_path).await,
-            EntryMode::FILE => self.copy_file(source, stat, destination).await,
+    pub async fn copy_recursive(&self, source: String, destination: String) -> Result<(), Error> {
+        self._copy(source, destination, true).await
+    }
+
+    async fn _copy(
+        &self,
+        source: String,
+        destination: String,
+        recursive: bool,
+    ) -> Result<(), Error> {
+        let source = Utf8UnixPathBuf::from(source).normalize();
+        let destination = Utf8UnixPathBuf::from(destination).normalize();
+
+        let stat = self.source.stat(source.as_str()).await?;
+        let source = Source::new(source, stat);
+
+        match source.meta.mode() {
+            EntryMode::DIR => self.copy_dir(source, destination, recursive).await,
+            EntryMode::FILE => self.copy_file(source, destination).await,
             _ => Err(Error::new(ErrorKind::Unsupported, "Unknown entry mode")),
         }
     }
 
-    async fn copy_file(
+    async fn copy_dir(
         &self,
-        source: String,
-        source_meta: Metadata,
-        destination: String,
+        source: Source,
+        destination: Utf8UnixPathBuf,
+        recursive: bool,
     ) -> Result<(), Error> {
-        let destination = match self.destination.stat(destination.as_str()).await {
-            Ok(stat) if stat.is_dir() => {
-                UnixPath::new(destination.as_str()) // Destination exists and is a directory
-                    .join(source_filename(source.as_str(), &source_meta)?)
-                    .to_string_lossy()
-                    .into_owned()
+        match self.destination.stat(destination.as_str()).await {
+            Ok(stat) if stat.is_file() => {
+                return Err(Error::new(
+                    ErrorKind::NotADirectory,
+                    "Cannot copy directory to a file",
+                ));
             }
-            Ok(_) => destination.clone(), // Destination exists and is a file (overwrite)
-            Err(e) if e.kind() == ErrorKind::NotFound => destination.clone(),
+            Ok(_) => (), // Destination exists and is a directory, continue
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                // Destination doesn't exist, create it
+                self.destination
+                    .create_dir(&format!("{}/", destination))
+                    .await?;
+            }
+            Err(e) => return Err(e),
+        }
+
+        // List files in source directory
+        let options = if recursive {
+            let mut opts = ListOptions::default();
+            opts.recursive = true;
+            Some(opts)
+        } else {
+            None
+        };
+
+        let mut lister = crate::list::lister(&self.source, source.path.as_str(), options).await?;
+
+        while let Some(entry) = lister.try_next().await? {
+            if entry.metadata().is_dir() {
+                continue;
+            }
+
+            let relative_path = Utf8UnixPathBuf::from(entry.path());
+            let relative_path = relative_path
+                .strip_prefix(source.path.clone())
+                .map_err(|err| {
+                    Error::new(ErrorKind::Unexpected, err.to_string()).set_source(err)
+                })?;
+            let destination = destination.join(relative_path);
+
+            if let Some(parent) = destination.parent() {
+                self.destination.create_dir(parent.as_str()).await?;
+            }
+
+            let source = Source::new(
+                Utf8UnixPathBuf::from(entry.path()),
+                entry.metadata().clone(),
+            );
+
+            self.do_copy_file(source, destination.as_str()).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn copy_file(&self, source: Source, destination: Utf8UnixPathBuf) -> Result<(), Error> {
+        let destination = match self.destination.stat(destination.as_str()).await {
+            Ok(stat) if stat.is_dir() => destination.join(source.name()?), // Destination exists and is a directory
+            Ok(_) => destination, // Destination exists and is a file (overwrite)
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                // Destination does not exist, ensure parent directory exists
+                if let Some(parent) = destination.parent() {
+                    self.destination.create_dir(parent.as_str()).await?;
+                }
+
+                destination
+            }
             Err(e) => {
                 return Err(e);
             }
         };
 
-        self.do_copy_file(source.as_str(), source_meta, destination.as_str())
-            .await
+        self.do_copy_file(source, destination.as_str()).await
     }
 
     // Copy a file from one storage to another.
     // This function expects that the input parameters have been validated
     // (that is, each path points to a file).
-    async fn do_copy_file(
-        &self,
-        source: &str,
-        source_meta: Metadata,
-        destination: &str,
-    ) -> Result<(), Error> {
-        let reader = self.source.reader(source).await?;
+    async fn do_copy_file(&self, source: Source, destination: &str) -> Result<(), Error> {
+        let reader = self.source.reader(source.path.as_str()).await?;
         let mut writer_builder = self.destination.writer_with(destination);
 
-        if let Some(content_type) = source_meta.content_type() {
+        if let Some(content_type) = source.meta.content_type() {
             writer_builder = writer_builder.content_type(content_type);
         }
         // TODO: add other metadata?
@@ -92,15 +174,28 @@ impl Copier {
     }
 }
 
-fn source_filename(path: &str, meta: &Metadata) -> Result<String, Error> {
-    UnixPath::new(path)
-        .file_name()
-        .map(|name| String::from_utf8_lossy(name).into_owned())
-        .or_else(|| {
-            meta.content_disposition()
-                .and_then(|cd| parse_content_disposition(cd).filename_full())
-        })
-        .ok_or_else(|| Error::new(ErrorKind::Unexpected, "Source has no filename."))
+#[derive(Debug, Clone)]
+struct Source {
+    path: Utf8UnixPathBuf,
+    meta: Metadata,
+}
+
+impl Source {
+    fn new(path: Utf8UnixPathBuf, meta: Metadata) -> Self {
+        Self { path, meta }
+    }
+
+    fn name(&self) -> Result<String, Error> {
+        self.path
+            .file_name()
+            .map(String::from)
+            .or_else(|| {
+                self.meta
+                    .content_disposition()
+                    .and_then(|cd| parse_content_disposition(cd).filename_full())
+            })
+            .ok_or_else(|| Error::new(ErrorKind::Unexpected, "Source has no filename"))
+    }
 }
 
 pub trait IntoErrorExt {
@@ -183,6 +278,235 @@ mod tests {
 
         let buffer = destination.read("path/file.txt").await.unwrap();
         assert_eq!(buffer.to_vec(), "foo".as_bytes());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_directory_non_recursive() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source directory structure
+        source.write("path/file1.txt", "content1").await?;
+        source.write("path/file2.txt", "content2").await?;
+        source.write("path/subdir/file3.txt", "content3").await?;
+
+        // Copy directory non-recursively
+        copy(
+            (source, "path/".to_string()),
+            (destination.clone(), "other/".to_string()),
+        )
+        .await?;
+
+        // Should copy only direct files, not subdirectories
+        let buffer1 = destination.read("other/file1.txt").await.unwrap();
+        assert_eq!(buffer1.to_vec(), "content1".as_bytes());
+
+        let buffer2 = destination.read("other/file2.txt").await.unwrap();
+        assert_eq!(buffer2.to_vec(), "content2".as_bytes());
+
+        // file3.txt should not exist as it's in a subdirectory
+        assert!(destination.read("other/file3.txt").await.is_err());
+        assert!(destination.read("other/subdir/file3.txt").await.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_directory_recursive() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source directory structure
+        source.write("path/file1.txt", "content1").await?;
+        source.write("path/file2.txt", "content2").await?;
+        source.write("path/subdir/file3.txt", "content3").await?;
+        source
+            .write("path/subdir/nested/file4.txt", "content4")
+            .await?;
+
+        // Copy directory recursively
+        copy_recursive(
+            (source, "path/".to_string()),
+            (destination.clone(), "other/".to_string()),
+        )
+        .await?;
+
+        // Should copy all files preserving structure
+        let buffer1 = destination.read("other/file1.txt").await.unwrap();
+        assert_eq!(buffer1.to_vec(), "content1".as_bytes());
+
+        let buffer2 = destination.read("other/file2.txt").await.unwrap();
+        assert_eq!(buffer2.to_vec(), "content2".as_bytes());
+
+        let buffer3 = destination.read("other/subdir/file3.txt").await.unwrap();
+        assert_eq!(buffer3.to_vec(), "content3".as_bytes());
+
+        let buffer4 = destination
+            .read("other/subdir/nested/file4.txt")
+            .await
+            .unwrap();
+        assert_eq!(buffer4.to_vec(), "content4".as_bytes());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_directory_to_existing_directory() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source files
+        source.write("path/file1.txt", "content1").await?;
+        source.write("path/file2.txt", "content2").await?;
+
+        // Create existing destination directory
+        destination.create_dir("existing/").await?;
+
+        // Copy directory to existing directory
+        copy(
+            (source, "path/".to_string()),
+            (destination.clone(), "existing/".to_string()),
+        )
+        .await?;
+
+        let buffer1 = destination.read("existing/file1.txt").await.unwrap();
+        assert_eq!(buffer1.to_vec(), "content1".as_bytes());
+
+        let buffer2 = destination.read("existing/file2.txt").await.unwrap();
+        assert_eq!(buffer2.to_vec(), "content2".as_bytes());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_directory_to_nonexistent_destination() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source files
+        source.write("path/file1.txt", "content1").await?;
+        source.write("path/file2.txt", "content2").await?;
+
+        // Copy directory to non-existent destination (should create it)
+        copy(
+            (source, "path/".to_string()),
+            (destination.clone(), "newdir/".to_string()),
+        )
+        .await?;
+
+        let buffer1 = destination.read("newdir/file1.txt").await.unwrap();
+        assert_eq!(buffer1.to_vec(), "content1".as_bytes());
+
+        let buffer2 = destination.read("newdir/file2.txt").await.unwrap();
+        assert_eq!(buffer2.to_vec(), "content2".as_bytes());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_directory_to_file_should_error() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source directory and files
+        source.write("path/file1.txt", "content1").await?;
+
+        // Create destination file
+        destination.write("existing_file.txt", "existing").await?;
+
+        // Attempting to copy directory to file should error
+        let result = copy(
+            (source, "path/".to_string()),
+            (destination, "existing_file.txt".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::IsADirectory);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_empty_directory() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create empty source directory
+        source.create_dir("empty/").await?;
+
+        // Copy empty directory
+        copy(
+            (source, "empty/".to_string()),
+            (destination.clone(), "new_empty/".to_string()),
+        )
+        .await?;
+
+        // Check that destination directory exists (it should be created even if empty)
+        let stat = destination.stat("new_empty/").await?;
+        assert!(stat.is_dir());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_directory_with_nested_empty_dirs() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source structure with nested empty directories and files
+        source.write("source/file.txt", "content").await?;
+        source.create_dir("source/empty_dir/").await?;
+        source
+            .write("source/nested/deep/file.txt", "deep_content")
+            .await?;
+
+        // Copy directory recursively
+        copy_recursive(
+            (source, "source/".to_string()),
+            (destination.clone(), "dest/".to_string()),
+        )
+        .await?;
+
+        // Verify files are copied
+        let buffer1 = destination.read("dest/file.txt").await.unwrap();
+        assert_eq!(buffer1.to_vec(), "content".as_bytes());
+
+        let buffer2 = destination.read("dest/nested/deep/file.txt").await.unwrap();
+        assert_eq!(buffer2.to_vec(), "deep_content".as_bytes());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_directory_overwrite_existing_files() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source files
+        source.write("source/file1.txt", "new_content1").await?;
+        source.write("source/file2.txt", "new_content2").await?;
+
+        // Create existing destination files with different content
+        destination.create_dir("dest/").await?;
+        destination.write("dest/file1.txt", "old_content1").await?;
+        destination.write("dest/file2.txt", "old_content2").await?;
+
+        // Copy directory (should overwrite existing files)
+        copy(
+            (source, "source/".to_string()),
+            (destination.clone(), "dest/".to_string()),
+        )
+        .await?;
+
+        // Verify files were overwritten
+        let buffer1 = destination.read("dest/file1.txt").await.unwrap();
+        assert_eq!(buffer1.to_vec(), "new_content1".as_bytes());
+
+        let buffer2 = destination.read("dest/file2.txt").await.unwrap();
+        assert_eq!(buffer2.to_vec(), "new_content2".as_bytes());
 
         Ok(())
     }
