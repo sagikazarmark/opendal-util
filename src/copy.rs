@@ -12,151 +12,95 @@ pub async fn copy(
     let (src_op, src_path) = source;
     let (dst_op, dst_path) = destination;
 
-    let src_stat = src_op.stat(src_path.as_str()).await?;
-
-    match src_stat.mode() {
-        EntryMode::DIR => copy_dir(src_op, src_path, src_stat, dst_op, dst_path).await,
-        EntryMode::FILE => copy_file(src_op, src_path, src_stat, dst_op, dst_path).await,
-        _ => {
-            return Err(Error::new(ErrorKind::Unsupported, "Unknown entry mode"));
-        }
-    }
+    Copier::new(src_op, dst_op).copy(src_path, dst_path).await
 }
 
-async fn copy_dir(
-    src_op: Operator,
-    src_path: String,
-    src_stat: Metadata,
-    dst_op: Operator,
-    dst_path: String,
-) -> Result<(), Error> {
-    let real_dst_path = match dst_op.stat(&dst_path).await {
-        Ok(stat) if stat.is_dir() => {
-            // Destination exists and is a directory
-            if let Some(filename) = UnixPath::new(&src_path).file_name() {
-                UnixPath::new(&dst_path)
-                    .join(filename)
+pub struct Copier {
+    source: Operator,
+    destination: Operator,
+}
+
+impl Copier {
+    pub fn new(source: Operator, destination: Operator) -> Self {
+        Self {
+            source,
+            destination,
+        }
+    }
+
+    pub async fn copy(&self, source: String, destination: String) -> Result<(), Error> {
+        let stat = self.source.stat(source.as_str()).await?;
+
+        match stat.mode() {
+            // EntryMode::DIR => self.copy_dir(src_op, src_path, src_stat, dst_op, dst_path).await,
+            EntryMode::FILE => self.copy_file(source, stat, destination).await,
+            _ => Err(Error::new(ErrorKind::Unsupported, "Unknown entry mode")),
+        }
+    }
+
+    async fn copy_file(
+        &self,
+        source: String,
+        source_meta: Metadata,
+        destination: String,
+    ) -> Result<(), Error> {
+        let destination = match self.destination.stat(destination.as_str()).await {
+            Ok(stat) if stat.is_dir() => {
+                UnixPath::new(destination.as_str()) // Destination exists and is a directory
+                    .join(source_filename(source.as_str(), &source_meta)?)
                     .to_string_lossy()
-                    .to_string()
-            } else if let Some(filename) = src_stat
-                .content_disposition()
-                .and_then(|cd| parse_content_disposition(cd).filename_full())
-            {
-                filename
-            } else {
-                return Err(Error::new(
-                    ErrorKind::Unexpected,
-                    format!(
-                        "Cannot copy source '{}' into directory '{}': Source has no filename.",
-                        src_path, dst_path
-                    ),
-                ));
+                    .into_owned()
             }
-        }
-        Ok(_) => {
-            // Destination exists and is a file (overwrite)
-            return Err(Error::new(
-                ErrorKind::Unexpected,
-                format!(
-                    "Directory copy destination '{}' exists and is a file.",
-                    dst_path
-                ),
-            ));
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => dst_path.clone(),
-        Err(e) => {
-            return Err(e);
-        }
-    };
-
-    do_copy_file(
-        &src_op,
-        src_path.as_str(),
-        src_stat,
-        &dst_op,
-        real_dst_path.as_str(),
-    )
-    .await
-}
-
-async fn copy_file(
-    src_op: Operator,
-    src_path: String,
-    src_stat: Metadata,
-    dst_op: Operator,
-    dst_path: String,
-) -> Result<(), Error> {
-    let real_dst_path = match dst_op.stat(&dst_path).await {
-        Ok(stat) if stat.is_dir() => {
-            // Destination exists and is a directory
-            if let Some(filename) = UnixPath::new(&src_path).file_name() {
-                UnixPath::new(&dst_path)
-                    .join(filename)
-                    .to_string_lossy()
-                    .to_string()
-            } else if let Some(filename) = src_stat
-                .content_disposition()
-                .and_then(|cd| parse_content_disposition(cd).filename_full())
-            {
-                filename
-            } else {
-                return Err(Error::new(
-                    ErrorKind::Unexpected,
-                    format!(
-                        "Cannot copy source '{}' into directory '{}': Source has no filename.",
-                        src_path, dst_path
-                    ),
-                ));
+            Ok(_) => destination.clone(), // Destination exists and is a file (overwrite)
+            Err(e) if e.kind() == ErrorKind::NotFound => destination.clone(),
+            Err(e) => {
+                return Err(e);
             }
-        }
-        Ok(_) => {
-            // Destination exists and is a file (overwrite)
-            dst_path.clone()
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => dst_path.clone(),
-        Err(e) => {
-            return Err(e);
-        }
-    };
+        };
 
-    do_copy_file(
-        &src_op,
-        src_path.as_str(),
-        src_stat,
-        &dst_op,
-        real_dst_path.as_str(),
-    )
-    .await
-}
-
-// Copy a file from one storage to another.
-// This function expects that the input parameters have been validated
-// (that is, each path points to a file).
-async fn do_copy_file(
-    src_op: &Operator,
-    src_path: &str,
-    src_stat: Metadata,
-    dst_op: &Operator,
-    dst_path: &str,
-) -> Result<(), Error> {
-    let reader = src_op.reader(src_path).await?;
-    let mut writer_builder = dst_op.writer_with(dst_path);
-
-    if let Some(content_type) = src_stat.content_type() {
-        writer_builder = writer_builder.content_type(content_type);
-    }
-    // TODO: add other metadata?
-
-    let mut writer = writer_builder.await?;
-
-    let mut stream = reader.into_bytes_stream(..).await?;
-    while let Some(chunk) = stream.try_next().map_err(|e| e.into_()).await? {
-        writer.write(chunk).await?;
+        self.do_copy_file(source.as_str(), source_meta, destination.as_str())
+            .await
     }
 
-    writer.close().await?;
+    // Copy a file from one storage to another.
+    // This function expects that the input parameters have been validated
+    // (that is, each path points to a file).
+    async fn do_copy_file(
+        &self,
+        source: &str,
+        source_meta: Metadata,
+        destination: &str,
+    ) -> Result<(), Error> {
+        let reader = self.source.reader(source).await?;
+        let mut writer_builder = self.destination.writer_with(destination);
 
-    Ok(())
+        if let Some(content_type) = source_meta.content_type() {
+            writer_builder = writer_builder.content_type(content_type);
+        }
+        // TODO: add other metadata?
+
+        let mut writer = writer_builder.await?;
+
+        let mut stream = reader.into_bytes_stream(..).await?;
+        while let Some(chunk) = stream.try_next().map_err(|e| e.into_()).await? {
+            writer.write(chunk).await?;
+        }
+
+        writer.close().await?;
+
+        Ok(())
+    }
+}
+
+fn source_filename(path: &str, meta: &Metadata) -> Result<String, Error> {
+    UnixPath::new(path)
+        .file_name()
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .or_else(|| {
+            meta.content_disposition()
+                .and_then(|cd| parse_content_disposition(cd).filename_full())
+        })
+        .ok_or_else(|| Error::new(ErrorKind::Unexpected, "Source has no filename."))
 }
 
 pub trait IntoErrorExt {
@@ -175,5 +119,71 @@ impl IntoErrorExt for io::Error {
         };
 
         Error::new(kind, self.to_string()).set_source(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use opendal::services::Memory;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_copy_file() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        source.write("path/to/file.txt", "foo").await?;
+
+        copy(
+            (source, "path/to/file.txt".to_string()),
+            (destination.clone(), "".to_string()),
+        )
+        .await?;
+
+        let buffer = destination.read("file.txt").await.unwrap();
+        assert_eq!(buffer.to_vec(), "foo".as_bytes());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_file_overwrite() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        source.write("path/to/file.txt", "foo").await?;
+        destination.write("file.txt", "bar").await?;
+
+        copy(
+            (source, "path/to/file.txt".to_string()),
+            (destination.clone(), "file.txt".to_string()),
+        )
+        .await?;
+
+        let buffer = destination.read("file.txt").await.unwrap();
+        assert_eq!(buffer.to_vec(), "foo".as_bytes());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_file_to_directory() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        source.write("path/to/file.txt", "foo").await?;
+        destination.create_dir("path/").await?;
+
+        copy(
+            (source, "path/to/file.txt".to_string()),
+            (destination.clone(), "path/".to_string()),
+        )
+        .await?;
+
+        let buffer = destination.read("path/file.txt").await.unwrap();
+        assert_eq!(buffer.to_vec(), "foo".as_bytes());
+
+        Ok(())
     }
 }
