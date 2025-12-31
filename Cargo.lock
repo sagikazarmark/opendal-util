@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "opendal-util"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "content_disposition",
  "futures",
