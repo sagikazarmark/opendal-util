@@ -1,4 +1,4 @@
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt, stream::BoxStream};
 use globset::Glob;
 use opendal::{Entry, Error, ErrorKind, Operator, options::ListOptions};
 
@@ -9,29 +9,51 @@ pub async fn list(
     path: &str,
     options: Option<ListOptions>,
 ) -> Result<Vec<Entry>, Error> {
-    if let Some(prefix) = glob::literal_prefix(path) {
-        return list_glob(operator, prefix.as_str(), path, options).await;
-    }
-
-    let lister;
-
-    if let Some(options) = options {
-        lister = operator.lister_options(path, options).await?;
-    } else {
-        lister = operator.lister(path).await?;
-    }
-
-    let entries: Vec<Entry> = lister.try_collect().await?;
+    let entries: Vec<Entry> = lister(operator, path, options).await?.try_collect().await?;
 
     Ok(entries)
 }
 
-pub async fn list_glob(
+pub async fn lister(
+    operator: &Operator,
+    path: &str,
+    options: Option<ListOptions>,
+) -> Result<BoxStream<'static, Result<Entry, Error>>, Error> {
+    if let Some(prefix) = glob::literal_prefix(path) {
+        // Glob pattern needs recursive listing
+        let mut options = options.unwrap_or_default();
+        options.recursive = true;
+
+        let glob = Glob::new(path)
+            .map_err(|err| {
+                Error::new(ErrorKind::Unexpected, "Invalid glob pattern").set_source(err)
+            })?
+            .compile_matcher();
+
+        return Ok(operator
+            .lister_options(prefix.as_str(), options)
+            .await?
+            .try_filter(move |entry| {
+                let matches = glob.is_match(entry.path());
+
+                futures::future::ready(matches)
+            })
+            .boxed());
+    }
+
+    if let Some(options) = options {
+        return Ok(operator.lister_options(path, options).await?.boxed());
+    }
+
+    Ok(operator.lister(path).await?.boxed())
+}
+
+pub async fn glob_lister(
     operator: &Operator,
     prefix: &str,
     glob: &str,
     options: Option<ListOptions>,
-) -> Result<Vec<Entry>, Error> {
+) -> Result<BoxStream<'static, Result<Entry, Error>>, Error> {
     // Glob pattern needs recursive listing
     let mut options = options.unwrap_or_default();
     options.recursive = true;
@@ -41,18 +63,15 @@ pub async fn list_glob(
         .map_err(|err| Error::new(ErrorKind::Unexpected, "Invalid glob pattern").set_source(err))?
         .compile_matcher();
 
-    let entries: Vec<Entry> = operator
+    Ok(operator
         .lister_options(prefix, options)
         .await?
-        .try_filter(|entry| {
+        .try_filter(move |entry| {
             let matches = glob.is_match(entry.path());
 
             futures::future::ready(matches)
         })
-        .try_collect()
-        .await?;
-
-    Ok(entries)
+        .boxed())
 }
 
 #[cfg(test)]
