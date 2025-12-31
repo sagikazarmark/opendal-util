@@ -91,11 +91,11 @@ impl Copier {
             Err(e) => return Err(e),
         }
 
-        // List files in source directory
         let options = if recursive {
-            let mut opts = ListOptions::default();
-            opts.recursive = true;
-            Some(opts)
+            Some(ListOptions {
+                recursive: true,
+                ..Default::default()
+            })
         } else {
             None
         };
