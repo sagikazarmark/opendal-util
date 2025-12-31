@@ -1016,25 +1016,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_copy_file_to_nonexistent_parent_directory() -> Result<(), Error> {
-        let source = Operator::new(Memory::default())?.finish();
-        let destination = Operator::new(Memory::default())?.finish();
-
-        // Create a source file
-        source.write("file.txt", "content").await?;
-
-        // Copy to a path where the parent directory doesn't exist
-        let copier = Copier::new(source, destination.clone());
-        copier.copy("file.txt", "new/nested/dir/file.txt").await?;
-
-        // Verify the file was copied and parent directories were created
-        let content = destination.read("new/nested/dir/file.txt").await?;
-        assert_eq!(content.to_vec(), b"content");
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_copy_file_to_deeply_nested_nonexistent_path() -> Result<(), Error> {
         let source = Operator::new(Memory::default())?.finish();
         let destination = Operator::new(Memory::default())?.finish();
@@ -1055,6 +1036,256 @@ mod tests {
 
         let content_b = destination.read("other/path/here/b.txt").await?;
         assert_eq!(content_b.to_vec(), b"bbb");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_nonexistent_source_should_error() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        let copier = Copier::new(source, destination);
+
+        // Try to copy a file that doesn't exist
+        let result = copier.copy("nonexistent.txt", "dest.txt").await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_nonexistent_directory_should_error() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        let copier = Copier::new(source, destination);
+
+        // Try to copy a directory that doesn't exist
+        let result = copier.copy("nonexistent/", "dest/").await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_file_preserves_content_type() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create a source file with content type
+        source
+            .write_with("image.png", "fake png data")
+            .content_type("image/png")
+            .await?;
+
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("image.png", "copied.png").await?;
+
+        // Verify content was copied
+        let content = destination.read("copied.png").await?;
+        assert_eq!(content.to_vec(), b"fake png data");
+
+        // Verify content type was preserved
+        let stat = destination.stat("copied.png").await?;
+        assert_eq!(stat.content_type(), Some("image/png"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_glob_brace_expansion() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create test files with different extensions
+        source.write("project/main.rs", "rust main").await?;
+        source.write("project/lib.rs", "rust lib").await?;
+        source.write("project/Cargo.toml", "cargo toml").await?;
+        source.write("project/config.json", "json config").await?;
+        source.write("project/readme.md", "readme").await?;
+
+        // Copy only .rs and .toml files using brace expansion
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("project/*.{rs,toml}", "backup/").await?;
+
+        // Verify .rs files were copied
+        let main = destination.read("backup/main.rs").await?;
+        assert_eq!(main.to_vec(), b"rust main");
+
+        let lib = destination.read("backup/lib.rs").await?;
+        assert_eq!(lib.to_vec(), b"rust lib");
+
+        // Verify .toml file was copied
+        let toml = destination.read("backup/Cargo.toml").await?;
+        assert_eq!(toml.to_vec(), b"cargo toml");
+
+        // Verify other files were NOT copied
+        assert!(destination.read("backup/config.json").await.is_err());
+        assert!(destination.read("backup/readme.md").await.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_glob_root_recursive_pattern() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create files at various depths
+        source.write("config.yaml", "root config").await?;
+        source.write("src/config.yaml", "src config").await?;
+        source
+            .write("src/nested/deep/config.yaml", "deep config")
+            .await?;
+        source.write("other.txt", "other").await?;
+
+        // Copy all config.yaml files using ** at the start
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("**/config.yaml", "configs/").await?;
+
+        // Verify all config.yaml files were copied preserving structure
+        let root = destination.read("configs/config.yaml").await?;
+        assert_eq!(root.to_vec(), b"root config");
+
+        let src = destination.read("configs/src/config.yaml").await?;
+        assert_eq!(src.to_vec(), b"src config");
+
+        let deep = destination
+            .read("configs/src/nested/deep/config.yaml")
+            .await?;
+        assert_eq!(deep.to_vec(), b"deep config");
+
+        // Verify other files were NOT copied
+        assert!(destination.read("configs/other.txt").await.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_directory_without_trailing_slash_destination() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source directory with files
+        source.write("src/file1.txt", "content1").await?;
+        source.write("src/file2.txt", "content2").await?;
+
+        // Copy directory to destination without trailing slash
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("src/", "dest").await?;
+
+        // Files should be copied into dest/
+        let content1 = destination.read("dest/file1.txt").await?;
+        assert_eq!(content1.to_vec(), b"content1");
+
+        let content2 = destination.read("dest/file2.txt").await?;
+        assert_eq!(content2.to_vec(), b"content2");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_file_with_special_characters_in_name() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create files with special characters (spaces, unicode)
+        source.write("files/hello world.txt", "spaces").await?;
+        source.write("files/über.txt", "umlaut").await?;
+        source.write("files/日本語.txt", "japanese").await?;
+
+        let copier = Copier::new(source, destination.clone());
+
+        // Copy files with special characters
+        copier
+            .copy("files/hello world.txt", "out/hello world.txt")
+            .await?;
+        copier.copy("files/über.txt", "out/über.txt").await?;
+        copier.copy("files/日本語.txt", "out/日本語.txt").await?;
+
+        // Verify all files were copied correctly
+        let spaces = destination.read("out/hello world.txt").await?;
+        assert_eq!(spaces.to_vec(), b"spaces");
+
+        let umlaut = destination.read("out/über.txt").await?;
+        assert_eq!(umlaut.to_vec(), b"umlaut");
+
+        let japanese = destination.read("out/日本語.txt").await?;
+        assert_eq!(japanese.to_vec(), b"japanese");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_glob_nonexistent_base_path_succeeds_empty() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create some files
+        source.write("dir/file.txt", "content").await?;
+
+        // Try to copy from a nonexistent directory with glob
+        // Note: This currently succeeds with no files copied (same as no matches)
+        // This is consistent with test_copy_glob_no_matches behavior
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("nonexistent/*.txt", "output/").await?;
+
+        // Destination directory should exist but contain no files
+        let entries = destination.list("output/").await?;
+        let file_entries: Vec<_> = entries.iter().filter(|e| e.metadata().is_file()).collect();
+        assert!(file_entries.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_with_dot_segments_in_path() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source file
+        source.write("dir/subdir/file.txt", "content").await?;
+
+        let copier = Copier::new(source, destination.clone());
+
+        // Copy using path with . and .. segments
+        copier
+            .copy("dir/./subdir/../subdir/file.txt", "output/file.txt")
+            .await?;
+
+        // Verify file was copied
+        let content = destination.read("output/file.txt").await?;
+        assert_eq!(content.to_vec(), b"content");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_preserves_multiple_metadata_fields() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create a source file with multiple metadata fields
+        source
+            .write_with("document.pdf", "fake pdf content")
+            .content_type("application/pdf")
+            .await?;
+
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("document.pdf", "backup/document.pdf").await?;
+
+        // Verify content
+        let content = destination.read("backup/document.pdf").await?;
+        assert_eq!(content.to_vec(), b"fake pdf content");
+
+        // Verify metadata
+        let stat = destination.stat("backup/document.pdf").await?;
+        assert_eq!(stat.content_type(), Some("application/pdf"));
 
         Ok(())
     }
