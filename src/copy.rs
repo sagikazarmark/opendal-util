@@ -615,4 +615,101 @@ mod tests {
         assert_eq!(normalize_path("..".to_string()).as_str(), "");
         assert_eq!(normalize_path("../".to_string()).as_str(), "/");
     }
+
+    #[test]
+    fn test_normalize_path_glob_patterns() {
+        // Basic glob patterns - should be preserved as-is
+        assert_eq!(normalize_path("*.txt".to_string()).as_str(), "*.txt");
+        assert_eq!(normalize_path("*.rs".to_string()).as_str(), "*.rs");
+        assert_eq!(normalize_path("file.*".to_string()).as_str(), "file.*");
+
+        // Directory globs
+        assert_eq!(normalize_path("*/".to_string()).as_str(), "*/");
+        assert_eq!(normalize_path("dir/*/".to_string()).as_str(), "dir/*/");
+
+        // Double asterisk (recursive glob)
+        assert_eq!(normalize_path("**".to_string()).as_str(), "**");
+        assert_eq!(normalize_path("**/".to_string()).as_str(), "**/");
+        assert_eq!(normalize_path("**/*.txt".to_string()).as_str(), "**/*.txt");
+        assert_eq!(
+            normalize_path("dir/**/*.rs".to_string()).as_str(),
+            "dir/**/*.rs"
+        );
+
+        // Question mark patterns
+        assert_eq!(
+            normalize_path("file?.txt".to_string()).as_str(),
+            "file?.txt"
+        );
+        assert_eq!(normalize_path("test?.*".to_string()).as_str(), "test?.*");
+
+        // Character classes
+        assert_eq!(
+            normalize_path("file[0-9].txt".to_string()).as_str(),
+            "file[0-9].txt"
+        );
+        assert_eq!(
+            normalize_path("[abc]*.rs".to_string()).as_str(),
+            "[abc]*.rs"
+        );
+        assert_eq!(
+            normalize_path("test[!0-9].txt".to_string()).as_str(),
+            "test[!0-9].txt"
+        );
+
+        // Complex glob patterns
+        assert_eq!(
+            normalize_path("src/**/*.{rs,toml}".to_string()).as_str(),
+            "src/**/*.{rs,toml}"
+        );
+        assert_eq!(
+            normalize_path("tests/**/test_*.rs".to_string()).as_str(),
+            "tests/**/test_*.rs"
+        );
+
+        // Globs with path normalization
+        assert_eq!(normalize_path("dir/../*.txt".to_string()).as_str(), "*.txt");
+        assert_eq!(
+            normalize_path("./src/**/*.rs".to_string()).as_str(),
+            "src/**/*.rs"
+        );
+        assert_eq!(
+            normalize_path("dir/./sub/**/*.txt".to_string()).as_str(),
+            "dir/sub/**/*.txt"
+        );
+
+        // Globs with leading slash removal
+        assert_eq!(normalize_path("/*.txt".to_string()).as_str(), "*.txt");
+        assert_eq!(normalize_path("/**/".to_string()).as_str(), "**/");
+        assert_eq!(
+            normalize_path("/dir/**/*.rs".to_string()).as_str(),
+            "dir/**/*.rs"
+        );
+
+        // Globs with multiple slashes
+        assert_eq!(
+            normalize_path("dir//**/*.txt".to_string()).as_str(),
+            "dir/**/*.txt"
+        );
+        assert_eq!(
+            normalize_path("src//sub//*.rs".to_string()).as_str(),
+            "src/sub/*.rs"
+        );
+
+        // Complex cases combining normalization and globs
+        assert_eq!(
+            normalize_path("/dir/./sub/../**/*.{rs,txt}".to_string()).as_str(),
+            "dir/**/*.{rs,txt}"
+        );
+        assert_eq!(
+            normalize_path("./tests//unit/../integration/**/test_*.rs".to_string()).as_str(),
+            "tests/integration/**/test_*.rs"
+        );
+
+        // Edge cases with globs
+        assert_eq!(normalize_path("*".to_string()).as_str(), "*");
+        assert_eq!(normalize_path("?".to_string()).as_str(), "?");
+        assert_eq!(normalize_path("[abc]".to_string()).as_str(), "[abc]");
+        assert_eq!(normalize_path("{}".to_string()).as_str(), "{}");
+    }
 }
