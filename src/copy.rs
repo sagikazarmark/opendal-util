@@ -54,8 +54,8 @@ impl Copier {
         destination: String,
         recursive: bool,
     ) -> Result<(), Error> {
-        let source = Utf8UnixPathBuf::from(source).normalize();
-        let destination = Utf8UnixPathBuf::from(destination).normalize();
+        let source = normalize_path(source);
+        let destination = normalize_path(destination);
 
         let stat = self.source.stat(source.as_str()).await?;
         let source = Source::new(source, stat);
@@ -76,7 +76,7 @@ impl Copier {
         match self.destination.stat(destination.as_str()).await {
             Ok(stat) if stat.is_file() => {
                 return Err(Error::new(
-                    ErrorKind::NotADirectory,
+                    ErrorKind::IsADirectory,
                     "Cannot copy directory to a file",
                 ));
             }
@@ -115,7 +115,9 @@ impl Copier {
             let destination = destination.join(relative_path);
 
             if let Some(parent) = destination.parent() {
-                self.destination.create_dir(parent.as_str()).await?;
+                self.destination
+                    .create_dir(format!("{}/", parent).as_str())
+                    .await?;
             }
 
             let source = Source::new(
@@ -196,6 +198,24 @@ impl Source {
             })
             .ok_or_else(|| Error::new(ErrorKind::Unexpected, "Source has no filename"))
     }
+}
+
+// - remove leading slash (root)
+// - add trailing slash if directory
+fn normalize_path(path: String) -> Utf8UnixPathBuf {
+    let is_dir = path.ends_with('/');
+
+    let mut path = Utf8UnixPathBuf::from(path)
+        .normalize()
+        .to_string()
+        .trim_start_matches("/")
+        .to_string();
+
+    if is_dir {
+        path.push('/');
+    }
+
+    Utf8UnixPathBuf::from(path)
 }
 
 pub trait IntoErrorExt {
