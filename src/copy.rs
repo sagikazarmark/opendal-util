@@ -9,8 +9,8 @@ use typed_path::Utf8UnixPathBuf;
 use crate::{glob, list};
 
 pub async fn copy(
-    source: (Operator, String),
-    destination: (Operator, String),
+    source: (Operator, impl Into<String>),
+    destination: (Operator, impl Into<String>),
 ) -> Result<(), Error> {
     let (src_op, src_path) = source;
     let (dst_op, dst_path) = destination;
@@ -23,8 +23,13 @@ pub struct Copier {
     destination: Operator,
 }
 
+/// Options for controlling copy behavior.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct CopyOptions {
+    /// Whether to copy directories recursively.
+    ///
+    /// When `true`, all files and subdirectories within a directory will be copied.
+    /// When `false`, only the immediate contents of the directory are copied.
     pub recursive: bool,
 }
 
@@ -36,19 +41,26 @@ impl Copier {
         }
     }
 
-    pub async fn copy(&self, source: String, destination: String) -> Result<(), Error> {
-        self.copy_options(source, destination, Default::default())
+    pub async fn copy(
+        &self,
+        source: impl Into<String>,
+        destination: impl Into<String>,
+    ) -> Result<(), Error> {
+        self.copy_with_options(source, destination, CopyOptions::default())
             .await
     }
 
-    async fn copy_options(
+    pub async fn copy_with_options(
         &self,
-        source: String,
-        destination: String,
+        source: impl Into<String>,
+        destination: impl Into<String>,
         options: CopyOptions,
     ) -> Result<(), Error> {
-        let source = normalize_path(source);
-        let destination = normalize_path(destination);
+        let source = source.into();
+        let destination = destination.into();
+
+        let source = normalize_path(&source);
+        let destination = normalize_path(&destination);
 
         // Check if source contains glob patterns
         if glob::has_glob_chars(source.as_str()) {
@@ -71,7 +83,7 @@ impl Copier {
         destination: Utf8UnixPathBuf,
     ) -> Result<(), Error> {
         // Get the literal prefix to determine the base path for relative path computation
-        let prefix = glob::literal_prefix(source.as_str()).unwrap_or_default();
+        let prefix = glob::extract_glob_prefix(source.as_str()).unwrap_or_default();
         let prefix = Utf8UnixPathBuf::from(prefix);
 
         let lister = crate::list::lister(&self.source, source.as_str(), None).await?;
@@ -198,7 +210,11 @@ impl Copier {
         let mut writer = writer_builder.await?;
 
         let mut stream = reader.into_bytes_stream(..).await?;
-        while let Some(chunk) = stream.try_next().map_err(|e| e.into_()).await? {
+        while let Some(chunk) = stream
+            .try_next()
+            .map_err(IoErrorExt::into_opendal_error)
+            .await?
+        {
             writer.write(chunk).await?;
         }
 
@@ -232,9 +248,11 @@ impl Source {
     }
 }
 
-// - remove leading slash (root)
-// - add trailing slash if directory
-fn normalize_path(path: String) -> Utf8UnixPathBuf {
+/// Normalizes a path by:
+/// - Removing leading slashes (root)
+/// - Preserving trailing slashes for directories
+/// - Resolving `.` and `..` components
+fn normalize_path(path: &str) -> Utf8UnixPathBuf {
     let is_dir = path.ends_with('/');
 
     let mut path = Utf8UnixPathBuf::from(path)
@@ -250,12 +268,12 @@ fn normalize_path(path: String) -> Utf8UnixPathBuf {
     Utf8UnixPathBuf::from(path)
 }
 
-pub trait IntoErrorExt {
-    fn into_(self) -> Error;
+trait IoErrorExt {
+    fn into_opendal_error(self) -> Error;
 }
 
-impl IntoErrorExt for io::Error {
-    fn into_(self) -> Error {
+impl IoErrorExt for io::Error {
+    fn into_opendal_error(self) -> Error {
         let kind = match self.kind() {
             io::ErrorKind::NotFound => ErrorKind::NotFound,
             io::ErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
@@ -382,9 +400,9 @@ mod tests {
 
         // Copy directory recursively
         copier
-            .copy_options(
-                "path/".to_string(),
-                "other/".to_string(),
+            .copy_with_options(
+                "path/",
+                "other/",
                 CopyOptions {
                     recursive: true,
                     ..Default::default()
@@ -526,9 +544,9 @@ mod tests {
 
         // Copy directory recursively
         copier
-            .copy_options(
-                "source/".to_string(),
-                "dest/".to_string(),
+            .copy_with_options(
+                "source/",
+                "dest/",
                 CopyOptions {
                     recursive: true,
                     ..Default::default()
@@ -580,170 +598,131 @@ mod tests {
     #[test]
     fn test_normalize_path() {
         // Simple file paths
-        assert_eq!(normalize_path("file.txt".to_string()).as_str(), "file.txt");
+        assert_eq!(normalize_path("file.txt").as_str(), "file.txt");
 
         // Directory paths
-        assert_eq!(normalize_path("dir/".to_string()).as_str(), "dir/");
+        assert_eq!(normalize_path("dir/").as_str(), "dir/");
 
         // Nested paths
         assert_eq!(
-            normalize_path("dir/subdir/file.txt".to_string()).as_str(),
+            normalize_path("dir/subdir/file.txt").as_str(),
             "dir/subdir/file.txt"
         );
-        assert_eq!(
-            normalize_path("dir/subdir/".to_string()).as_str(),
-            "dir/subdir/"
-        );
+        assert_eq!(normalize_path("dir/subdir/").as_str(), "dir/subdir/");
 
         // Leading slash removal
-        assert_eq!(normalize_path("/file.txt".to_string()).as_str(), "file.txt");
-        assert_eq!(normalize_path("/dir/".to_string()).as_str(), "dir/");
+        assert_eq!(normalize_path("/file.txt").as_str(), "file.txt");
+        assert_eq!(normalize_path("/dir/").as_str(), "dir/");
         assert_eq!(
-            normalize_path("/dir/subdir/file.txt".to_string()).as_str(),
+            normalize_path("/dir/subdir/file.txt").as_str(),
             "dir/subdir/file.txt"
         );
 
         // Dot segments
-        assert_eq!(
-            normalize_path("dir/./file.txt".to_string()).as_str(),
-            "dir/file.txt"
-        );
-        assert_eq!(normalize_path("dir/./".to_string()).as_str(), "dir/");
+        assert_eq!(normalize_path("dir/./file.txt").as_str(), "dir/file.txt");
+        assert_eq!(normalize_path("dir/./").as_str(), "dir/");
 
         // Double dot segments
         assert_eq!(
-            normalize_path("dir/subdir/../file.txt".to_string()).as_str(),
+            normalize_path("dir/subdir/../file.txt").as_str(),
             "dir/file.txt"
         );
-        assert_eq!(
-            normalize_path("dir/subdir/../".to_string()).as_str(),
-            "dir/"
-        );
+        assert_eq!(normalize_path("dir/subdir/../").as_str(), "dir/");
 
         // Multiple slashes
         assert_eq!(
-            normalize_path("dir//subdir//file.txt".to_string()).as_str(),
+            normalize_path("dir//subdir//file.txt").as_str(),
             "dir/subdir/file.txt"
         );
-        assert_eq!(
-            normalize_path("dir//subdir//".to_string()).as_str(),
-            "dir/subdir/"
-        );
+        assert_eq!(normalize_path("dir//subdir//").as_str(), "dir/subdir/");
 
         // Complex cases
         assert_eq!(
-            normalize_path("/dir/./subdir/../another//file.txt".to_string()).as_str(),
+            normalize_path("/dir/./subdir/../another//file.txt").as_str(),
             "dir/another/file.txt"
         );
         assert_eq!(
-            normalize_path("/dir/./subdir/../another//".to_string()).as_str(),
+            normalize_path("/dir/./subdir/../another//").as_str(),
             "dir/another/"
         );
 
         // Edge cases
-        assert_eq!(normalize_path("".to_string()).as_str(), "");
-        assert_eq!(normalize_path("/".to_string()).as_str(), "/");
-        assert_eq!(normalize_path(".".to_string()).as_str(), "");
-        assert_eq!(normalize_path("./".to_string()).as_str(), "/");
-        assert_eq!(normalize_path("..".to_string()).as_str(), "");
-        assert_eq!(normalize_path("../".to_string()).as_str(), "/");
+        assert_eq!(normalize_path("").as_str(), "");
+        assert_eq!(normalize_path("/").as_str(), "/");
+        assert_eq!(normalize_path(".").as_str(), "");
+        assert_eq!(normalize_path("./").as_str(), "/");
+        assert_eq!(normalize_path("..").as_str(), "");
+        assert_eq!(normalize_path("../").as_str(), "/");
     }
 
     #[test]
     fn test_normalize_path_glob_patterns() {
         // Basic glob patterns - should be preserved as-is
-        assert_eq!(normalize_path("*.txt".to_string()).as_str(), "*.txt");
-        assert_eq!(normalize_path("*.rs".to_string()).as_str(), "*.rs");
-        assert_eq!(normalize_path("file.*".to_string()).as_str(), "file.*");
+        assert_eq!(normalize_path("*.txt").as_str(), "*.txt");
+        assert_eq!(normalize_path("*.rs").as_str(), "*.rs");
+        assert_eq!(normalize_path("file.*").as_str(), "file.*");
 
         // Directory globs
-        assert_eq!(normalize_path("*/".to_string()).as_str(), "*/");
-        assert_eq!(normalize_path("dir/*/".to_string()).as_str(), "dir/*/");
+        assert_eq!(normalize_path("*/").as_str(), "*/");
+        assert_eq!(normalize_path("dir/*/").as_str(), "dir/*/");
 
         // Double asterisk (recursive glob)
-        assert_eq!(normalize_path("**".to_string()).as_str(), "**");
-        assert_eq!(normalize_path("**/".to_string()).as_str(), "**/");
-        assert_eq!(normalize_path("**/*.txt".to_string()).as_str(), "**/*.txt");
-        assert_eq!(
-            normalize_path("dir/**/*.rs".to_string()).as_str(),
-            "dir/**/*.rs"
-        );
+        assert_eq!(normalize_path("**").as_str(), "**");
+        assert_eq!(normalize_path("**/").as_str(), "**/");
+        assert_eq!(normalize_path("**/*.txt").as_str(), "**/*.txt");
+        assert_eq!(normalize_path("dir/**/*.rs").as_str(), "dir/**/*.rs");
 
         // Question mark patterns
-        assert_eq!(
-            normalize_path("file?.txt".to_string()).as_str(),
-            "file?.txt"
-        );
-        assert_eq!(normalize_path("test?.*".to_string()).as_str(), "test?.*");
+        assert_eq!(normalize_path("file?.txt").as_str(), "file?.txt");
+        assert_eq!(normalize_path("test?.*").as_str(), "test?.*");
 
         // Character classes
-        assert_eq!(
-            normalize_path("file[0-9].txt".to_string()).as_str(),
-            "file[0-9].txt"
-        );
-        assert_eq!(
-            normalize_path("[abc]*.rs".to_string()).as_str(),
-            "[abc]*.rs"
-        );
-        assert_eq!(
-            normalize_path("test[!0-9].txt".to_string()).as_str(),
-            "test[!0-9].txt"
-        );
+        assert_eq!(normalize_path("file[0-9].txt").as_str(), "file[0-9].txt");
+        assert_eq!(normalize_path("[abc]*.rs").as_str(), "[abc]*.rs");
+        assert_eq!(normalize_path("test[!0-9].txt").as_str(), "test[!0-9].txt");
 
         // Complex glob patterns
         assert_eq!(
-            normalize_path("src/**/*.{rs,toml}".to_string()).as_str(),
+            normalize_path("src/**/*.{rs,toml}").as_str(),
             "src/**/*.{rs,toml}"
         );
         assert_eq!(
-            normalize_path("tests/**/test_*.rs".to_string()).as_str(),
+            normalize_path("tests/**/test_*.rs").as_str(),
             "tests/**/test_*.rs"
         );
 
         // Globs with path normalization
-        assert_eq!(normalize_path("dir/../*.txt".to_string()).as_str(), "*.txt");
+        assert_eq!(normalize_path("dir/../*.txt").as_str(), "*.txt");
+        assert_eq!(normalize_path("./src/**/*.rs").as_str(), "src/**/*.rs");
         assert_eq!(
-            normalize_path("./src/**/*.rs".to_string()).as_str(),
-            "src/**/*.rs"
-        );
-        assert_eq!(
-            normalize_path("dir/./sub/**/*.txt".to_string()).as_str(),
+            normalize_path("dir/./sub/**/*.txt").as_str(),
             "dir/sub/**/*.txt"
         );
 
         // Globs with leading slash removal
-        assert_eq!(normalize_path("/*.txt".to_string()).as_str(), "*.txt");
-        assert_eq!(normalize_path("/**/".to_string()).as_str(), "**/");
-        assert_eq!(
-            normalize_path("/dir/**/*.rs".to_string()).as_str(),
-            "dir/**/*.rs"
-        );
+        assert_eq!(normalize_path("/*.txt").as_str(), "*.txt");
+        assert_eq!(normalize_path("/**/").as_str(), "**/");
+        assert_eq!(normalize_path("/dir/**/*.rs").as_str(), "dir/**/*.rs");
 
         // Globs with multiple slashes
-        assert_eq!(
-            normalize_path("dir//**/*.txt".to_string()).as_str(),
-            "dir/**/*.txt"
-        );
-        assert_eq!(
-            normalize_path("src//sub//*.rs".to_string()).as_str(),
-            "src/sub/*.rs"
-        );
+        assert_eq!(normalize_path("dir//**/*.txt").as_str(), "dir/**/*.txt");
+        assert_eq!(normalize_path("src//sub//*.rs").as_str(), "src/sub/*.rs");
 
         // Complex cases combining normalization and globs
         assert_eq!(
-            normalize_path("/dir/./sub/../**/*.{rs,txt}".to_string()).as_str(),
+            normalize_path("/dir/./sub/../**/*.{rs,txt}").as_str(),
             "dir/**/*.{rs,txt}"
         );
         assert_eq!(
-            normalize_path("./tests//unit/../integration/**/test_*.rs".to_string()).as_str(),
+            normalize_path("./tests//unit/../integration/**/test_*.rs").as_str(),
             "tests/integration/**/test_*.rs"
         );
 
         // Edge cases with globs
-        assert_eq!(normalize_path("*".to_string()).as_str(), "*");
-        assert_eq!(normalize_path("?".to_string()).as_str(), "?");
-        assert_eq!(normalize_path("[abc]".to_string()).as_str(), "[abc]");
-        assert_eq!(normalize_path("{}".to_string()).as_str(), "{}");
+        assert_eq!(normalize_path("*").as_str(), "*");
+        assert_eq!(normalize_path("?").as_str(), "?");
+        assert_eq!(normalize_path("[abc]").as_str(), "[abc]");
+        assert_eq!(normalize_path("{}").as_str(), "{}");
     }
 
     #[tokio::test]

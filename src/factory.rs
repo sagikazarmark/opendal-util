@@ -4,8 +4,7 @@ use opendal::{Error, ErrorKind, Operator, OperatorRegistry, OperatorUri};
 use url::Url;
 
 pub trait OperatorFactory: Send + Sync {
-    #[allow(clippy::wrong_self_convention)]
-    fn from_uri(&self, uri: &str) -> Result<Operator, Error>;
+    fn load(&self, uri: &str) -> Result<Operator, Error>;
 }
 
 pub struct DefaultOperatorFactory;
@@ -23,14 +22,14 @@ impl Default for DefaultOperatorFactory {
 }
 
 impl OperatorFactory for DefaultOperatorFactory {
-    fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
+    fn load(&self, uri: &str) -> Result<Operator, Error> {
         Operator::from_uri(uri)
     }
 }
 
 impl OperatorFactory for OperatorRegistry {
-    fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
-        self.load(uri)
+    fn load(&self, uri: &str) -> Result<Operator, Error> {
+        OperatorRegistry::load(self, uri)
     }
 }
 
@@ -45,7 +44,7 @@ impl ProfileOperatorFactory {
 }
 
 impl OperatorFactory for ProfileOperatorFactory {
-    fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
+    fn load(&self, uri: &str) -> Result<Operator, Error> {
         let mut url = Url::parse(uri).map_err(|err| {
             Error::new(ErrorKind::ConfigInvalid, "Failed to parse uri").set_source(err)
         })?;
@@ -97,9 +96,9 @@ impl ChainOperatorFactory {
 }
 
 impl OperatorFactory for ChainOperatorFactory {
-    fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
+    fn load(&self, uri: &str) -> Result<Operator, Error> {
         for factory in &self.factories {
-            match factory.from_uri(uri) {
+            match factory.load(uri) {
                 Ok(op) => return Ok(op),
                 Err(e) if e.kind() == ErrorKind::Unsupported => continue,
                 Err(e) => return Err(e),
@@ -152,8 +151,8 @@ where
     Inner: OperatorFactory,
     F: Fn(Operator) -> Operator + Send + Sync,
 {
-    fn from_uri(&self, uri: &str) -> Result<Operator, Error> {
-        let op = self.inner.from_uri(uri)?;
+    fn load(&self, uri: &str) -> Result<Operator, Error> {
+        let op = self.inner.load(uri)?;
 
         Ok((self.transform)(op))
     }

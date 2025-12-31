@@ -19,7 +19,7 @@ pub async fn lister(
     path: &str,
     options: Option<ListOptions>,
 ) -> Result<BoxStream<'static, Result<Entry, Error>>, Error> {
-    if let Some(prefix) = glob::literal_prefix(path) {
+    if let Some(prefix) = glob::extract_glob_prefix(path) {
         // Glob pattern needs recursive listing
         let mut options = options.unwrap_or_default();
         options.recursive = true;
@@ -45,7 +45,7 @@ pub async fn lister(
         return Ok(operator.lister_options(path, options).await?.boxed());
     }
 
-    Ok(operator.lister(path).await?.boxed())
+    operator.lister(path).await.map(|l| l.boxed())
 }
 
 pub async fn glob_lister(

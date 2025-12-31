@@ -1,4 +1,4 @@
-pub(crate) fn literal_prefix(pattern: &str) -> Option<String> {
+pub(crate) fn extract_glob_prefix(pattern: &str) -> Option<String> {
     let mut parts = Vec::new();
     let mut found_glob = false;
 
@@ -27,7 +27,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_literal_prefix() {
+    fn test_extract_glob_prefix() {
         let test_cases = vec![
             ("path/to/some/**/*.txt", Some("path/to/some".to_string())),
             ("path/to/s?me/**/*.txt", Some("path/to".to_string())),
@@ -37,7 +37,7 @@ mod tests {
         ];
 
         for (input, expected) in test_cases {
-            let result = literal_prefix(input);
+            let result = extract_glob_prefix(input);
             assert_eq!(result, expected, "Failed for input: {}", input);
         }
     }
