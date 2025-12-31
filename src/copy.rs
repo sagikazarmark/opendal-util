@@ -46,11 +46,11 @@ impl Copier {
         source: impl Into<String>,
         destination: impl Into<String>,
     ) -> Result<(), Error> {
-        self.copy_with_options(source, destination, CopyOptions::default())
+        self.copy_options(source, destination, CopyOptions::default())
             .await
     }
 
-    pub async fn copy_with_options(
+    pub async fn copy_options(
         &self,
         source: impl Into<String>,
         destination: impl Into<String>,
@@ -400,7 +400,7 @@ mod tests {
 
         // Copy directory recursively
         copier
-            .copy_with_options(
+            .copy_options(
                 "path/",
                 "other/",
                 CopyOptions {
@@ -544,7 +544,7 @@ mod tests {
 
         // Copy directory recursively
         copier
-            .copy_with_options(
+            .copy_options(
                 "source/",
                 "dest/",
                 CopyOptions {
