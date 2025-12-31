@@ -124,9 +124,7 @@ impl Copier {
             if let Some(parent) = destination.parent()
                 && !created_dirs.contains(&(parent.to_owned()))
             {
-                self.destination
-                    .create_dir(format!("{}/", parent).as_str())
-                    .await?;
+                self.destination.create_dir(&format!("{}/", parent)).await?;
 
                 created_dirs.insert(parent.to_owned());
             }
