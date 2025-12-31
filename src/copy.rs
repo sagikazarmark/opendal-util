@@ -530,4 +530,76 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_normalize_path() {
+        // Simple file paths
+        assert_eq!(normalize_path("file.txt".to_string()).as_str(), "file.txt");
+
+        // Directory paths
+        assert_eq!(normalize_path("dir/".to_string()).as_str(), "dir/");
+
+        // Nested paths
+        assert_eq!(
+            normalize_path("dir/subdir/file.txt".to_string()).as_str(),
+            "dir/subdir/file.txt"
+        );
+        assert_eq!(
+            normalize_path("dir/subdir/".to_string()).as_str(),
+            "dir/subdir/"
+        );
+
+        // Leading slash removal
+        assert_eq!(normalize_path("/file.txt".to_string()).as_str(), "file.txt");
+        assert_eq!(normalize_path("/dir/".to_string()).as_str(), "dir/");
+        assert_eq!(
+            normalize_path("/dir/subdir/file.txt".to_string()).as_str(),
+            "dir/subdir/file.txt"
+        );
+
+        // Dot segments
+        assert_eq!(
+            normalize_path("dir/./file.txt".to_string()).as_str(),
+            "dir/file.txt"
+        );
+        assert_eq!(normalize_path("dir/./".to_string()).as_str(), "dir/");
+
+        // Double dot segments
+        assert_eq!(
+            normalize_path("dir/subdir/../file.txt".to_string()).as_str(),
+            "dir/file.txt"
+        );
+        assert_eq!(
+            normalize_path("dir/subdir/../".to_string()).as_str(),
+            "dir/"
+        );
+
+        // Multiple slashes
+        assert_eq!(
+            normalize_path("dir//subdir//file.txt".to_string()).as_str(),
+            "dir/subdir/file.txt"
+        );
+        assert_eq!(
+            normalize_path("dir//subdir//".to_string()).as_str(),
+            "dir/subdir/"
+        );
+
+        // Complex cases
+        assert_eq!(
+            normalize_path("/dir/./subdir/../another//file.txt".to_string()).as_str(),
+            "dir/another/file.txt"
+        );
+        assert_eq!(
+            normalize_path("/dir/./subdir/../another//".to_string()).as_str(),
+            "dir/another/"
+        );
+
+        // Edge cases
+        assert_eq!(normalize_path("".to_string()).as_str(), "");
+        assert_eq!(normalize_path("/".to_string()).as_str(), "/");
+        assert_eq!(normalize_path(".".to_string()).as_str(), "");
+        assert_eq!(normalize_path("./".to_string()).as_str(), "/");
+        assert_eq!(normalize_path("..".to_string()).as_str(), "");
+        assert_eq!(normalize_path("../".to_string()).as_str(), "/");
+    }
 }
