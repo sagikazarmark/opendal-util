@@ -42,14 +42,14 @@ impl Copier {
     }
 
     pub async fn copy(&self, source: String, destination: String) -> Result<(), Error> {
-        self._copy(source, destination, false).await
+        self.copy_impl(source, destination, false).await
     }
 
     pub async fn copy_recursive(&self, source: String, destination: String) -> Result<(), Error> {
-        self._copy(source, destination, true).await
+        self.copy_impl(source, destination, true).await
     }
 
-    async fn _copy(
+    async fn copy_impl(
         &self,
         source: String,
         destination: String,
