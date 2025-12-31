@@ -16,21 +16,14 @@ pub async fn copy(
     Copier::new(src_op, dst_op).copy(src_path, dst_path).await
 }
 
-pub async fn copy_recursive(
-    source: (Operator, String),
-    destination: (Operator, String),
-) -> Result<(), Error> {
-    let (src_op, src_path) = source;
-    let (dst_op, dst_path) = destination;
-
-    Copier::new(src_op, dst_op)
-        .copy_recursive(src_path, dst_path)
-        .await
-}
-
 pub struct Copier {
     source: Operator,
     destination: Operator,
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub struct CopyOptions {
+    pub recursive: bool,
 }
 
 impl Copier {
@@ -42,18 +35,15 @@ impl Copier {
     }
 
     pub async fn copy(&self, source: String, destination: String) -> Result<(), Error> {
-        self.copy_impl(source, destination, false).await
+        self.copy_options(source, destination, Default::default())
+            .await
     }
 
-    pub async fn copy_recursive(&self, source: String, destination: String) -> Result<(), Error> {
-        self.copy_impl(source, destination, true).await
-    }
-
-    async fn copy_impl(
+    async fn copy_options(
         &self,
         source: String,
         destination: String,
-        recursive: bool,
+        options: CopyOptions,
     ) -> Result<(), Error> {
         let source = normalize_path(source);
         let destination = normalize_path(destination);
@@ -62,7 +52,7 @@ impl Copier {
         let source = Source::new(source, stat);
 
         match source.meta.mode() {
-            EntryMode::DIR => self.copy_dir(source, destination, recursive).await,
+            EntryMode::DIR => self.copy_dir(source, destination, options.recursive).await,
             EntryMode::FILE => self.copy_file(source, destination).await,
             _ => Err(Error::new(ErrorKind::Unsupported, "Unknown entry mode")),
         }
@@ -355,12 +345,19 @@ mod tests {
             .write("path/subdir/nested/file4.txt", "content4")
             .await?;
 
+        let copier = Copier::new(source.clone(), destination.clone());
+
         // Copy directory recursively
-        copy_recursive(
-            (source, "path/".to_string()),
-            (destination.clone(), "other/".to_string()),
-        )
-        .await?;
+        copier
+            .copy_options(
+                "path/".to_string(),
+                "other/".to_string(),
+                CopyOptions {
+                    recursive: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
 
         // Should copy all files preserving structure
         let buffer1 = destination.read("other/file1.txt").await.unwrap();
@@ -492,12 +489,19 @@ mod tests {
             .write("source/nested/deep/file.txt", "deep_content")
             .await?;
 
+        let copier = Copier::new(source.clone(), destination.clone());
+
         // Copy directory recursively
-        copy_recursive(
-            (source, "source/".to_string()),
-            (destination.clone(), "dest/".to_string()),
-        )
-        .await?;
+        copier
+            .copy_options(
+                "source/".to_string(),
+                "dest/".to_string(),
+                CopyOptions {
+                    recursive: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
 
         // Verify files are copied
         let buffer1 = destination.read("dest/file.txt").await.unwrap();
