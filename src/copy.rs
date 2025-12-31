@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 
 use content_disposition::parse_content_disposition;
@@ -101,6 +102,12 @@ impl Copier {
 
         let mut lister = crate::list::lister(&self.source, source.path.as_str(), options).await?;
 
+        // Track which directories we've already created to avoid duplicate create_dir calls
+        let mut created_dirs = HashSet::new();
+
+        // Mark the destination directory as already created
+        created_dirs.insert(destination.clone());
+
         while let Some(entry) = lister.try_next().await? {
             if entry.metadata().is_dir() {
                 continue;
@@ -114,10 +121,14 @@ impl Copier {
                 })?;
             let destination = destination.join(relative_path);
 
-            if let Some(parent) = destination.parent() {
+            if let Some(parent) = destination.parent()
+                && !created_dirs.contains(&(parent.to_owned()))
+            {
                 self.destination
                     .create_dir(format!("{}/", parent).as_str())
                     .await?;
+
+                created_dirs.insert(parent.to_owned());
             }
 
             let source = Source::new(
