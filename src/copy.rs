@@ -8,16 +8,6 @@ use typed_path::Utf8UnixPathBuf;
 
 use crate::{glob, list};
 
-pub async fn copy(
-    source: (Operator, impl Into<String>),
-    destination: (Operator, impl Into<String>),
-) -> Result<(), Error> {
-    let (src_op, src_path) = source;
-    let (dst_op, dst_path) = destination;
-
-    Copier::new(src_op, dst_op).copy(src_path, dst_path).await
-}
-
 pub struct Copier {
     source: Operator,
     destination: Operator,
@@ -300,11 +290,8 @@ mod tests {
 
         source.write("path/to/file.txt", "foo").await?;
 
-        copy(
-            (source, "path/to/file.txt".to_string()),
-            (destination.clone(), "".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("path/to/file.txt", "").await?;
 
         let buffer = destination.read("file.txt").await.unwrap();
         assert_eq!(buffer.to_vec(), "foo".as_bytes());
@@ -320,11 +307,8 @@ mod tests {
         source.write("path/to/file.txt", "foo").await?;
         destination.write("file.txt", "bar").await?;
 
-        copy(
-            (source, "path/to/file.txt".to_string()),
-            (destination.clone(), "file.txt".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("path/to/file.txt", "file.txt").await?;
 
         let buffer = destination.read("file.txt").await.unwrap();
         assert_eq!(buffer.to_vec(), "foo".as_bytes());
@@ -340,11 +324,8 @@ mod tests {
         source.write("path/to/file.txt", "foo").await?;
         destination.create_dir("path/").await?;
 
-        copy(
-            (source, "path/to/file.txt".to_string()),
-            (destination.clone(), "path/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("path/to/file.txt", "path/").await?;
 
         let buffer = destination.read("path/file.txt").await.unwrap();
         assert_eq!(buffer.to_vec(), "foo".as_bytes());
@@ -363,11 +344,8 @@ mod tests {
         source.write("path/subdir/file3.txt", "content3").await?;
 
         // Copy directory non-recursively
-        copy(
-            (source, "path/".to_string()),
-            (destination.clone(), "other/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("path/", "other/").await?;
 
         // Should copy only direct files, not subdirectories
         let buffer1 = destination.read("other/file1.txt").await.unwrap();
@@ -442,11 +420,8 @@ mod tests {
         destination.create_dir("existing/").await?;
 
         // Copy directory to existing directory
-        copy(
-            (source, "path/".to_string()),
-            (destination.clone(), "existing/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("path/", "existing/").await?;
 
         let buffer1 = destination.read("existing/file1.txt").await.unwrap();
         assert_eq!(buffer1.to_vec(), "content1".as_bytes());
@@ -467,11 +442,8 @@ mod tests {
         source.write("path/file2.txt", "content2").await?;
 
         // Copy directory to non-existent destination (should create it)
-        copy(
-            (source, "path/".to_string()),
-            (destination.clone(), "newdir/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("path/", "newdir/").await?;
 
         let buffer1 = destination.read("newdir/file1.txt").await.unwrap();
         assert_eq!(buffer1.to_vec(), "content1".as_bytes());
@@ -494,11 +466,8 @@ mod tests {
         destination.write("existing_file.txt", "existing").await?;
 
         // Attempting to copy directory to file should error
-        let result = copy(
-            (source, "path/".to_string()),
-            (destination, "existing_file.txt".to_string()),
-        )
-        .await;
+        let copier = Copier::new(source, destination);
+        let result = copier.copy("path/", "existing_file.txt").await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), ErrorKind::NotADirectory);
@@ -515,11 +484,8 @@ mod tests {
         source.create_dir("empty/").await?;
 
         // Copy empty directory
-        copy(
-            (source, "empty/".to_string()),
-            (destination.clone(), "new_empty/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("empty/", "new_empty/").await?;
 
         // Check that destination directory exists (it should be created even if empty)
         let stat = destination.stat("new_empty/").await?;
@@ -579,11 +545,8 @@ mod tests {
         destination.write("dest/file2.txt", "old_content2").await?;
 
         // Copy directory (should overwrite existing files)
-        copy(
-            (source, "source/".to_string()),
-            (destination.clone(), "dest/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("source/", "dest/").await?;
 
         // Verify files were overwritten
         let buffer1 = destination.read("dest/file1.txt").await.unwrap();
@@ -736,11 +699,8 @@ mod tests {
         source.write("dir/file3.rs", "content3").await?;
 
         // Copy only .txt files
-        copy(
-            (source.clone(), "dir/*.txt".to_string()),
-            (destination.clone(), "output/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("dir/*.txt", "output/").await?;
 
         // Verify .txt files were copied
         let buffer1 = destination.read("output/file1.txt").await?;
@@ -769,11 +729,8 @@ mod tests {
         source.write("src/readme.txt", "readme").await?;
 
         // Copy all .rs files recursively
-        copy(
-            (source.clone(), "src/**/*.rs".to_string()),
-            (destination.clone(), "backup/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("src/**/*.rs", "backup/").await?;
 
         // Verify .rs files were copied with directory structure preserved
         let main = destination.read("backup/main.rs").await?;
@@ -806,11 +763,8 @@ mod tests {
         source.write("data/file10.txt", "ten").await?;
 
         // Copy files matching file?.txt (single character)
-        copy(
-            (source.clone(), "data/file?.txt".to_string()),
-            (destination.clone(), "out/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("data/file?.txt", "out/").await?;
 
         // Verify single digit files were copied
         let f1 = destination.read("out/file1.txt").await?;
@@ -837,11 +791,8 @@ mod tests {
         source.write("logs/app.bak", "bak").await?;
 
         // Copy files with .log or .txt extension using character class
-        copy(
-            (source.clone(), "logs/app.[lt]*".to_string()),
-            (destination.clone(), "archive/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("logs/app.[lt]*", "archive/").await?;
 
         // Verify matching files were copied
         let log = destination.read("archive/app.log").await?;
@@ -870,11 +821,8 @@ mod tests {
         destination.write("dest/existing.txt", "existing").await?;
 
         // Copy glob to existing directory
-        copy(
-            (source.clone(), "src/*.txt".to_string()),
-            (destination.clone(), "dest/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("src/*.txt", "dest/").await?;
 
         // Verify files were copied
         let a = destination.read("dest/a.txt").await?;
@@ -899,11 +847,8 @@ mod tests {
         source.write("dir/file.txt", "content").await?;
 
         // Try to copy with pattern that matches nothing
-        copy(
-            (source.clone(), "dir/*.rs".to_string()),
-            (destination.clone(), "output/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("dir/*.rs", "output/").await?;
 
         // Destination directory should exist but contain no files
         let entries = destination.list("output/").await?;
@@ -926,11 +871,8 @@ mod tests {
         destination.write("dest", "file").await?;
 
         // Try to copy glob to a file - should error
-        let result = copy(
-            (source.clone(), "src/*.txt".to_string()),
-            (destination.clone(), "dest".to_string()),
-        )
-        .await;
+        let copier = Copier::new(source.clone(), destination.clone());
+        let result = copier.copy("src/*.txt", "dest").await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), ErrorKind::NotADirectory);
@@ -954,11 +896,8 @@ mod tests {
         source.write("project/docs/readme.md", "readme").await?;
 
         // Copy all .rs files
-        copy(
-            (source.clone(), "project/**/*.rs".to_string()),
-            (destination.clone(), "backup/".to_string()),
-        )
-        .await?;
+        let copier = Copier::new(source.clone(), destination.clone());
+        copier.copy("project/**/*.rs", "backup/").await?;
 
         // Verify structure is preserved
         let app = destination.read("backup/src/main/app.rs").await?;
