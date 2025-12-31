@@ -6,6 +6,11 @@ use futures::{TryFutureExt, TryStreamExt};
 use opendal::{EntryMode, Error, ErrorKind, Metadata, Operator, options::ListOptions};
 use typed_path::Utf8UnixPathBuf;
 
+#[cfg(feature = "schemars")]
+use schemars::JsonSchema;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 use crate::{glob, list};
 
 pub struct Copier {
@@ -15,6 +20,9 @@ pub struct Copier {
 
 /// Options for controlling copy behavior.
 #[derive(Debug, Copy, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "restate", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "schemars", derive(JsonSchema))]
 pub struct CopyOptions {
     /// Whether to copy directories recursively.
     ///
