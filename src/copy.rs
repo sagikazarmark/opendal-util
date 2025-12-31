@@ -76,7 +76,7 @@ impl Copier {
         match self.destination.stat(destination.as_str()).await {
             Ok(stat) if stat.is_file() => {
                 return Err(Error::new(
-                    ErrorKind::IsADirectory,
+                    ErrorKind::NotADirectory,
                     "Cannot copy directory to a file",
                 ));
             }
@@ -444,7 +444,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), ErrorKind::IsADirectory);
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::NotADirectory);
 
         Ok(())
     }
