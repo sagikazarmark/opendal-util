@@ -29,6 +29,14 @@ pub struct CopyOptions {
     /// When `true`, all files and subdirectories within a directory will be copied.
     /// When `false`, only the immediate contents of the directory are copied.
     pub recursive: bool,
+
+    /// Whether to disable glob pattern interpretation in the source path.
+    ///
+    /// When `false` (the default), glob characters (`*`, `?`, `[`, `{`) in the source
+    /// path will be interpreted as glob patterns for matching multiple files.
+    /// When `true`, paths are treated literally, allowing copying of files whose
+    /// names contain glob characters.
+    pub disable_glob: bool,
 }
 
 impl Copier {
@@ -61,7 +69,7 @@ impl Copier {
         let destination = normalize_path(&destination);
 
         // Check if source contains glob patterns
-        if glob::has_glob_chars(source.as_str()) {
+        if !options.disable_glob && glob::has_glob_chars(source.as_str()) {
             return self.copy_glob(source, destination).await;
         }
 
@@ -180,7 +188,7 @@ impl Copier {
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 // Destination does not exist, ensure parent directory exists
                 if let Some(parent) = destination.parent() {
-                    self.destination.create_dir(parent.as_str()).await?;
+                    self.destination.create_dir(&format!("{}/", parent)).await?;
                 }
 
                 destination
@@ -920,6 +928,133 @@ mod tests {
         // Verify .md was NOT copied
         let result = destination.read("backup/docs/readme.md").await;
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_glob_disabled() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create files with literal glob characters in their names
+        source.write("data/file[1].txt", "bracketed").await?;
+        source.write("data/file*.txt", "starred").await?;
+        source.write("data/file?.txt", "questioned").await?;
+
+        // Copy file with glob characters literally (glob disabled)
+        let copier = Copier::new(source.clone(), destination.clone());
+        let options = CopyOptions {
+            disable_glob: true,
+            ..Default::default()
+        };
+
+        // Copy the file with brackets in its name
+        copier
+            .copy_options("data/file[1].txt", "output/file[1].txt", options)
+            .await?;
+
+        // Verify the file was copied literally
+        let content = destination.read("output/file[1].txt").await?;
+        assert_eq!(content.to_vec(), b"bracketed");
+
+        // Copy the file with asterisk in its name
+        copier
+            .copy_options("data/file*.txt", "output/file*.txt", options)
+            .await?;
+
+        let content = destination.read("output/file*.txt").await?;
+        assert_eq!(content.to_vec(), b"starred");
+
+        // Copy the file with question mark in its name
+        copier
+            .copy_options("data/file?.txt", "output/file?.txt", options)
+            .await?;
+
+        let content = destination.read("output/file?.txt").await?;
+        assert_eq!(content.to_vec(), b"questioned");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_glob_enabled_vs_disabled() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create test files
+        source.write("data/file1.txt", "one").await?;
+        source.write("data/file2.txt", "two").await?;
+
+        let copier = Copier::new(source.clone(), destination.clone());
+
+        // With glob enabled (default), pattern should match multiple files
+        let options_glob_enabled = CopyOptions::default();
+        copier
+            .copy_options("data/file*.txt", "output_glob/", options_glob_enabled)
+            .await?;
+
+        // Both files should be copied
+        let content1 = destination.read("output_glob/file1.txt").await?;
+        assert_eq!(content1.to_vec(), b"one");
+        let content2 = destination.read("output_glob/file2.txt").await?;
+        assert_eq!(content2.to_vec(), b"two");
+
+        // With glob disabled, "file*.txt" is treated as a literal filename (which doesn't exist)
+        let options_glob_disabled = CopyOptions {
+            disable_glob: true,
+            ..Default::default()
+        };
+        let result = copier
+            .copy_options("data/file*.txt", "output_literal/", options_glob_disabled)
+            .await;
+
+        // Should fail because there's no file literally named "file*.txt"
+        assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_file_to_nonexistent_parent_directory() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create a source file
+        source.write("file.txt", "content").await?;
+
+        // Copy to a path where the parent directory doesn't exist
+        let copier = Copier::new(source, destination.clone());
+        copier.copy("file.txt", "new/nested/dir/file.txt").await?;
+
+        // Verify the file was copied and parent directories were created
+        let content = destination.read("new/nested/dir/file.txt").await?;
+        assert_eq!(content.to_vec(), b"content");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_copy_file_to_deeply_nested_nonexistent_path() -> Result<(), Error> {
+        let source = Operator::new(Memory::default())?.finish();
+        let destination = Operator::new(Memory::default())?.finish();
+
+        // Create source files
+        source.write("a.txt", "aaa").await?;
+        source.write("b.txt", "bbb").await?;
+
+        let copier = Copier::new(source, destination.clone());
+
+        // Copy multiple files to different nonexistent nested paths
+        copier.copy("a.txt", "level1/level2/a.txt").await?;
+        copier.copy("b.txt", "other/path/here/b.txt").await?;
+
+        // Verify both files were copied correctly
+        let content_a = destination.read("level1/level2/a.txt").await?;
+        assert_eq!(content_a.to_vec(), b"aaa");
+
+        let content_b = destination.read("other/path/here/b.txt").await?;
+        assert_eq!(content_b.to_vec(), b"bbb");
 
         Ok(())
     }
