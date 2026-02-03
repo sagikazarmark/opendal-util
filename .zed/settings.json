@@ -6,6 +6,9 @@
           "features": "all",
           "allTargets": true,
         },
+        "files": {
+          "excludeDirs": [".devenv", ".direnv", "target"],
+        },
       },
     },
   },
