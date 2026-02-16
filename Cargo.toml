@@ -9,7 +9,7 @@ homepage = "https://github.com/sagikazarmark/opendal-util"
 
 [dependencies]
 content_disposition = "0.4.0"
-futures = "0.3.31"
+futures = "0.3.32"
 globset = "0.4.18"
 opendal = { version = "0.55", features = [ "services-memory" ] }
 restate-sdk = { version = "0.7", optional = true }
