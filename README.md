@@ -1,7 +1,9 @@
 # OpenDAL utilities
 
-![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/sagikazarmark/opendal-util/ci.yaml?style=flat-square)
-![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/opendal-util/badge?style=flat-square)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/sagikazarmark/opendal-util/ci.yaml?style=flat-square)](https://github.com/sagikazarmark/opendal-util/actions/workflows/ci.yaml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/opendal-util/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sagikazarmark/opendal-util)
+[![crates.io](https://img.shields.io/crates/v/opendal-util?style=flat-square)](https://crates.io/crates/opendal-util)
+[![docs.rs](https://img.shields.io/docsrs/opendal-util?style=flat-square)](https://docs.rs/opendal-util)
 
 **Utilities for [OpenDAL](https://opendal.apache.org).**
 
