@@ -14,7 +14,9 @@ pub fn to_restate_error(err: opendal::Error) -> HandlerError {
             _ => 500,
         };
 
-        return TerminalError::new_with_code(status_code, err.to_string()).into();
+        return TerminalError::new(err.to_string())
+            .with_code(status_code)
+            .into();
     }
 
     err.into()
