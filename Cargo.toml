@@ -7,11 +7,18 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/sagikazarmark/opendal-util"
 homepage = "https://github.com/sagikazarmark/opendal-util"
 
+[features]
+default = []
+restate = ["dep:restate-sdk", "serde", "schemars"]
+serde = ["dep:serde"]
+schemars = ["serde", "dep:schemars"]
+
 [dependencies]
 content_disposition = "0.4"
 futures = "0.3"
 globset = "0.4"
 opendal = { version = "0.57", features = [ "services-memory" ] }
+percent-encoding = "2.3.2"
 restate-sdk = { version = "0.11", default-features = false, features = ["hyper"], optional = true }
 schemars = { version = "1.2", features = ["url2"], optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
@@ -21,11 +28,9 @@ url = { version = "2.5", features = ["serde"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 
-[features]
-default = []
-restate = ["dep:restate-sdk", "serde", "schemars"]
-serde = ["dep:serde"]
-schemars = ["serde", "dep:schemars"]
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+# ctor 1.0.8+ produces misaligned Mach-O sections on arm64 macOS.
+ctor = "=1.0.7"
 
 [package.metadata.release]
 sign-commit = true
